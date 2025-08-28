@@ -72,6 +72,39 @@ Observação: `valor` vem no formato numérico sem o prefixo "R$"; trate a local
 - Rodar o dataset completo pode levar tempo. Use `--max-brands` e `--max-models` para validar primeiro.
 - Em caso de HTTP 429/5xx, o script tenta automaticamente novamente (`--retries` e `--backoff`).
 
+## Fluxo com curl (informativo)
+
+Você pode explorar a API FIPE (Parallelum) com `curl` para entender o fluxo antes de usar o script. Substitua os placeholders `{...}` pelos códigos obtidos na etapa anterior.
+
+- Listar marcas (ex.: carros):
+
+```bash
+curl -s "https://parallelum.com.br/fipe/api/v1/carros/marcas"
+```
+
+- Listar modelos de uma marca:
+
+```bash
+curl -s "https://parallelum.com.br/fipe/api/v1/carros/marcas/{codigoMarca}/modelos"
+```
+
+- Listar anos de um modelo:
+
+```bash
+curl -s "https://parallelum.com.br/fipe/api/v1/carros/marcas/{codigoMarca}/modelos/{codigoModelo}/anos"
+```
+
+- Obter preço/detalhes para um ano específico:
+
+```bash
+curl -s "https://parallelum.com.br/fipe/api/v1/carros/marcas/{codigoMarca}/modelos/{codigoModelo}/anos/{codigoAno}"
+```
+
+Notas:
+- Para motos e caminhões, substitua `carros` por `motos` ou `caminhoes` na URL.
+- Em Windows/PowerShell, `curl` pode ser um alias de `Invoke-WebRequest`. Se preferir, use `curl.exe` explicitamente.
+- A resposta é JSON; para visualizar melhor, você pode usar utilitários como `jq` (Linux/macOS) ou formatadores online.
+
 ## Licença
 
 Uso interno Finatech. Ajuste conforme a política da sua organização.
