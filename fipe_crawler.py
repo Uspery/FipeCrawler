@@ -87,6 +87,13 @@ def get_json(session: requests.Session, url: str) -> Optional[dict]:
         return None
 
 
+def list_references(session: requests.Session) -> List[Dict]:
+    """Lista códigos/meses de referência da FIPE v2."""
+    url = f"{BASE_URL}/references"
+    data = get_json(session, url)
+    return data or []
+
+
 def list_brands(session: requests.Session, vtype: str, reference: Optional[str]) -> List[Dict]:
     url = f"{BASE_URL}/{TYPE_PATH[vtype]}/brands"
     if reference:
@@ -268,6 +275,7 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     p.add_argument("--workers", type=int, default=1, help="Número de requisições concorrentes (padrão: 1)")
     p.add_argument("--token", type=str, default=None, help="X-Subscription-Token para a API v2 (limite p/ dia)")
     p.add_argument("--reference", type=str, default=None, help="Código de referência do mês (ex.: 308)")
+    p.add_argument("--list-references", action="store_true", help="Apenas lista os códigos/meses de referência e sai")
     return p.parse_args(argv)
 
 
@@ -282,6 +290,18 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         # Permite definir por env também, opcional
         args.reference = os.getenv("REFERENCE")
     try:
+        # Modo de listagem de referências
+        if args.list_references:
+            sess = build_session(timeout=args.timeout, retries=args.retries, backoff=args.backoff, token=args.token)
+            refs = list_references(sess)
+            if not refs:
+                print("[INFO] Nenhuma referência retornada (verifique o TOKEN)")
+                return 0
+            # Imprime como CSV simples no stdout
+            print("code,month")
+            for r in refs:
+                print(f"{r.get('code')},{r.get('month')}")
+            return 0
         crawl_to_csv(
             vtype=args.type,
             out_path=args.out,
