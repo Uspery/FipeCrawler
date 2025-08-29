@@ -11,7 +11,7 @@ Até que tenhamos releases versionados, consideramos apenas a branch `main` como
 - Por favor, **não abra issues públicas** para vulnerabilidades.
 - Utilize uma destas opções:
   - Clique em "Report a vulnerability" (GitHub Security Advisory), se o repositório estiver no GitHub.
-  - Ou envie um e-mail para: security@uspery.com (substitua por um contato válido do projeto).
+  - Ou envie um e-mail para: security@uspery.com.
 
 Inclua, se possível:
 - Descrição clara do problema e impacto.
