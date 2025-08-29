@@ -252,13 +252,13 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Exporta FIPE para CSV (Parallelum API)")
     p.add_argument(
         "--type",
-        required=True,
+        required=False,
         choices=sorted(VALID_TYPES),
         help="Tipo de veículo: carros | motos | caminhoes",
     )
     p.add_argument(
         "--out",
-        required=True,
+        required=False,
         help="Caminho do arquivo CSV de saída",
     )
     p.add_argument("--timeout", type=int, default=15, help="Timeout por requisição (s)")
@@ -302,6 +302,10 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             for r in refs:
                 print(f"{r.get('code')},{r.get('month')}")
             return 0
+        # Validação para modo de exportação
+        if not args.type or not args.out:
+            print("usage: --type {caminhoes,carros,motos} --out OUT [opções]", file=sys.stderr)
+            return 2
         crawl_to_csv(
             vtype=args.type,
             out_path=args.out,
