@@ -6,6 +6,26 @@ API v2 Docs: https://deividfortuna.github.io/fipe/v2/
 
 Suporta tipos de veículo: `carros`, `motos`, `caminhoes`.
 
+## Estrutura do Projeto
+
+```
+.
+├── fipe_crawler.py          # CLI mínimo (apenas orquestra): parse de args, .env e delega para o pacote
+├── fipecrawler/             # Módulos com a lógica de negócio
+│   ├── __init__.py          # Reexporta constantes e classes principais
+│   ├── http.py              # Sessões HTTP, retries/backoff, rate limit utilitário
+│   ├── api.py               # Funções de acesso à API FIPE (brands/models/years/price)
+│   ├── state.py             # Checkpoint (full scan) e helpers de CSV
+│   ├── logging.py           # Helpers para logs padronizados
+│   ├── export.py            # Classe Exporter (exporta um tipo para CSV)
+│   └── fullscan.py          # Classe FullScanner (varredura completa com limite diário)
+├── requirements.txt
+├── .env                     # Configurações (TOKEN, REFERENCE, limites, etc.)
+└── .gitignore
+```
+
+Observação: `fipe_crawler.py` não contém mais lógica de coleta; ele apenas chama `fipecrawler.Exporter` e `fipecrawler.FullScanner`.
+
 ## Requisitos
 
 - Python 3.9+
@@ -63,6 +83,8 @@ Full scan (varre `carros` -> `motos` -> `caminhoes`, respeitando limite diário)
 ```bash
 python fipe_crawler.py --full-scan
 ```
+
+O CLI resolve automaticamente a referência mais recente quando `--reference` não é informado ou é `latest`.
 
 Detalhes do full scan:
 - Usa `DAILY_LIMIT` e `LIMIT_MARGIN` do `.env`.
@@ -136,6 +158,17 @@ Os campos mapeiam a resposta v2 (`brand`, `model`, `modelYear`, `fuel`, `fuelAcr
 - Em caso de HTTP 429/5xx, o script tenta automaticamente novamente (`--retries` e `--backoff`).
 - Concurrency: os preços por ano são buscados em paralelo. Por padrão `--workers=1` para respeitar limites; aumente com cautela.
 
+## Logs no console
+
+Durante a execução são emitidos logs padronizados para acompanhar o progresso:
+
+- `[START]` início de export ou full scan com parâmetros
+- `[STAGE]` avanço de etapa (tipo, marca, modelo, anos)
+- `[RESUME]` retomada a partir de checkpoint (full scan)
+- `[CONT]`/`[NEXT]` continuidade de índices de marca/modelo/ano
+- `[STATS]` resumo de linhas processadas e uso diário
+- `[REF]` referência utilizada (latest ou informada)
+
 ## Troubleshooting
 
 - __Unauthorized (401/403)__: verifique `TOKEN` (CLI ou `.env`). Tokens inválidos ou ausentes causam erro.
@@ -176,6 +209,63 @@ Notas:
 - Para motos e caminhões, substitua `cars` por `motorcycles` ou `trucks` na URL.
 - Em Windows/PowerShell, `curl` pode ser um alias de `Invoke-WebRequest`. Se preferir, use `curl.exe` explicitamente.
 - A resposta é JSON; para visualizar melhor, você pode usar utilitários como `jq` (Linux/macOS) ou formatadores online.
+
+## Exemplos no PowerShell (Windows)
+
+- Executar com Python do sistema usando o launcher do Windows:
+
+```powershell
+py .\fipe_crawler.py --list-references
+py .\fipe_crawler.py --type carros --out .\fipe_carros.csv
+py .\fipe_crawler.py --full-scan
+```
+
+- Definir variáveis de ambiente temporárias no PowerShell e executar:
+
+```powershell
+$env:TOKEN = "SEU_TOKEN"
+$env:REFERENCE = "latest"   # ou um código como 308
+py .\fipe_crawler.py --type motos --out .\fipe_motos.csv
+```
+
+- Quebra de linha em comandos longos (use acento grave/backtick `):
+
+```powershell
+py .\fipe_crawler.py \
+  --type caminhoes \
+  --out .\fipe_caminhoes.csv \
+  --timeout 30 \
+  --retries 5 \
+  --rate-delay 0.2 \
+  --workers 1
+```
+
+Observação: o `.env` na raiz é carregado automaticamente; variáveis via CLI têm precedência.
+
+## Como contribuir
+
+1. Clone ou faça fork do repositório.
+2. Crie um ambiente virtual e instale dependências:
+
+   - PowerShell (Windows):
+
+   ```powershell
+   py -m venv .venv
+   .\.venv\Scripts\Activate.ps1
+   pip install -r requirements.txt
+   ```
+
+   - Bash (Linux/macOS):
+
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -r requirements.txt
+   ```
+
+3. Execute os comandos de uso para validar mudanças.
+4. Siga a estrutura modular (`fipecrawler/`) e mantenha logs padronizados.
+5. Abra um PR descrevendo claramente mudanças, motivo e impacto.
 
 ## Licença
 
