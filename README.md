@@ -1,4 +1,4 @@
-# Finatech.FipeCrawler
+# FipeCrawler
 
 Crawler em Python para exportar a Tabela FIPE em CSV usando a API v2 (Parallelum/Deivid Fortuna).
 
@@ -266,7 +266,3 @@ Observação: o `.env` na raiz é carregado automaticamente; variáveis via CLI 
 3. Execute os comandos de uso para validar mudanças.
 4. Siga a estrutura modular (`fipecrawler/`) e mantenha logs padronizados.
 5. Abra um PR descrevendo claramente mudanças, motivo e impacto.
-
-## Licença
-
-Uso interno Finatech. Ajuste conforme a política da sua organização.
