@@ -31,6 +31,19 @@ Observações:
 - O `TOKEN` é usado como `X-Subscription-Token` nas requisições v2.
 - Você pode informar `--token`/`--reference` via CLI; se presentes, eles têm precedência sobre o `.env`.
 
+### Parâmetros para Full Scan
+
+Adicione também (valores exemplo):
+
+```
+# Limite diário de requisições do seu plano
+DAILY_LIMIT=500
+# Margem de segurança: quando faltarem N requisições para o limite, pausa e retoma no dia seguinte
+LIMIT_MARGIN=10
+# Pasta de saída do full scan
+FULL_SCAN_DIR=full_scan
+```
+
 ## Uso
 
 Execute o script `fipe_crawler.py` escolhendo o tipo e o arquivo de saída:
@@ -44,6 +57,18 @@ Listar referências disponíveis (code,month):
 ```bash
 python fipe_crawler.py --list-references
 ```
+
+Full scan (varre `carros` -> `motos` -> `caminhoes`, respeitando limite diário):
+
+```bash
+python fipe_crawler.py --full-scan
+```
+
+Detalhes do full scan:
+- Usa `DAILY_LIMIT` e `LIMIT_MARGIN` do `.env`.
+- Pausa automaticamente quando restarem `LIMIT_MARGIN` requisições; salva checkpoint em `.state/full_scan.json`.
+- Retoma de onde parou no dia seguinte (o contador diário zera automaticamente ao mudar o dia).
+- Gera 3 arquivos CSV (um por tipo) em `FULL_SCAN_DIR` (padrão `full_scan/`).
 
 Opções:
 
@@ -91,6 +116,7 @@ python fipe_crawler.py --type caminhoes --out fipe_caminhoes.csv --rate-delay 0.
 - `--token`: Token v2 (se omitido, será lido de `TOKEN` no `.env`).
 - `--reference`: Código da referência (se omitido, usa o mês atual; pode ser definido em `REFERENCE` no `.env`).
 - `--list-references`: Lista todas as referências (imprime `code,month`) e encerra.
+- `--full-scan`: Executa varredura completa (carros→motos→caminhoes) com limite diário e retomada automática.
 
 ## Saída CSV
 
@@ -116,6 +142,7 @@ Os campos mapeiam a resposta v2 (`brand`, `model`, `modelYear`, `fuel`, `fuelAcr
 - __Too Many Requests (429)__: reduza `--workers`, aumente `--rate-delay` (ex.: 0.1–0.5), aumente `--backoff` e/ou `--retries`.
 - __Timeouts__: aumente `--timeout` (ex.: 30) e `--retries`.
 - __Sem linhas no CSV__: confira se há dados para a `--reference` usada; tente listar com `--list-references` e ajustar.
+- __Full scan pausou cedo__: verifique `DAILY_LIMIT` e `LIMIT_MARGIN` no `.env`. O processo pausa quando `remaining <= margin` para evitar atingir o teto diário.
 
 ## Fluxo com curl (informativo)
 
