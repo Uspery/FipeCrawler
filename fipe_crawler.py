@@ -18,16 +18,30 @@ import argparse
 import csv
 import sys
 import time
+import threading
+import os
+import concurrent.futures as futures
 from typing import Dict, Iterable, List, Optional
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
+from dotenv import load_dotenv
 
-BASE_URL = "https://parallelum.com.br/fipe/api/v1"
+BASE_URL = "https://fipe.parallelum.com.br/api/v2"
 VALID_TYPES = {"carros", "motos", "caminhoes"}
 
+# Mapeia tipos em PT-BR para os paths da API v2
+TYPE_PATH = {
+    "carros": "cars",
+    "motos": "motorcycles",
+    "caminhoes": "trucks",
+}
 
-def build_session(timeout: int, retries: int, backoff: float) -> requests.Session:
+# Thread-local para manter uma Session por thread
+_thread_local = threading.local()
+
+
+def build_session(timeout: int, retries: int, backoff: float, token: Optional[str] = None) -> requests.Session:
     session = requests.Session()
     retry = Retry(
         total=retries,
@@ -40,7 +54,18 @@ def build_session(timeout: int, retries: int, backoff: float) -> requests.Sessio
     session.mount("http://", adapter)
     session.mount("https://", adapter)
     session.request = _timeout_request_wrapper(session.request, timeout)
+    if token:
+        session.headers.update({"X-Subscription-Token": token, "accept": "application/json"})
     return session
+
+
+def get_thread_session(timeout: int, retries: int, backoff: float, token: Optional[str]) -> requests.Session:
+    """Retorna uma Session específica da thread, criando se necessário."""
+    sess = getattr(_thread_local, "session", None)
+    if sess is None:
+        sess = build_session(timeout=timeout, retries=retries, backoff=backoff, token=token)
+        _thread_local.session = sess
+    return sess
 
 
 def _timeout_request_wrapper(original_request, timeout: int):
@@ -62,32 +87,72 @@ def get_json(session: requests.Session, url: str) -> Optional[dict]:
         return None
 
 
-def list_brands(session: requests.Session, vtype: str) -> List[Dict]:
-    url = f"{BASE_URL}/{vtype}/marcas"
+def list_brands(session: requests.Session, vtype: str, reference: Optional[str]) -> List[Dict]:
+    url = f"{BASE_URL}/{TYPE_PATH[vtype]}/brands"
+    if reference:
+        url = f"{url}?reference={reference}"
     data = get_json(session, url)
     return data or []
 
 
-def list_models(session: requests.Session, vtype: str, brand_code: str) -> List[Dict]:
-    url = f"{BASE_URL}/{vtype}/marcas/{brand_code}/modelos"
-    data = get_json(session, url)
-    if not data:
-        return []
-    # Resposta tem forma { modelos: [...], anos: [...] }
-    modelos = data.get("modelos") or []
-    return modelos
-
-
-def list_years(session: requests.Session, vtype: str, brand_code: str, model_code: str) -> List[Dict]:
-    url = f"{BASE_URL}/{vtype}/marcas/{brand_code}/modelos/{model_code}/anos"
+def list_models(session: requests.Session, vtype: str, brand_code: str, reference: Optional[str]) -> List[Dict]:
+    url = f"{BASE_URL}/{TYPE_PATH[vtype]}/brands/{brand_code}/models"
+    if reference:
+        url = f"{url}?reference={reference}"
     data = get_json(session, url)
     return data or []
 
 
-def get_price(session: requests.Session, vtype: str, brand_code: str, model_code: str, year_code: str) -> Optional[Dict]:
-    url = f"{BASE_URL}/{vtype}/marcas/{brand_code}/modelos/{model_code}/anos/{year_code}"
+def list_years(session: requests.Session, vtype: str, brand_code: str, model_code: str, reference: Optional[str]) -> List[Dict]:
+    url = f"{BASE_URL}/{TYPE_PATH[vtype]}/brands/{brand_code}/models/{model_code}/years"
+    if reference:
+        url = f"{url}?reference={reference}"
+    data = get_json(session, url)
+    return data or []
+
+
+def get_price(session: requests.Session, vtype: str, brand_code: str, model_code: str, year_code: str, reference: Optional[str]) -> Optional[Dict]:
+    url = f"{BASE_URL}/{TYPE_PATH[vtype]}/brands/{brand_code}/models/{model_code}/years/{year_code}"
+    if reference:
+        url = f"{url}?reference={reference}"
     data = get_json(session, url)
     return data
+
+
+def _fetch_row(
+    vtype: str,
+    bcode: str,
+    bname: str,
+    mcode: str,
+    mname: str,
+    ycode: str,
+    timeout: int,
+    retries: int,
+    backoff: float,
+    rate_delay: float,
+    token: Optional[str],
+    reference: Optional[str],
+) -> Optional[Dict]:
+    if rate_delay > 0:
+        time.sleep(rate_delay)
+    session = get_thread_session(timeout=timeout, retries=retries, backoff=backoff, token=token)
+    price = get_price(session, vtype, bcode, mcode, ycode, reference)
+    if not price:
+        return None
+    return {
+        "tipo": vtype,
+        "codigo_marca": bcode,
+        "marca": price.get("brand") or bname,
+        "codigo_modelo": mcode,
+        "modelo": price.get("model") or mname,
+        "codigo_ano": ycode,
+        "ano_modelo": price.get("modelYear"),
+        "combustivel": price.get("fuel"),
+        "sigla_combustivel": price.get("fuelAcronym"),
+        "codigo_fipe": price.get("codeFipe"),
+        "mes_referencia": price.get("referenceMonth"),
+        "valor": (price.get("price") or "").replace("R$", "").strip(),
+    }
 
 
 CSV_COLUMNS = [
@@ -115,11 +180,14 @@ def crawl_to_csv(
     rate_delay: float = 0.0,
     max_brands: Optional[int] = None,
     max_models: Optional[int] = None,
+    workers: int = 1,
+    token: Optional[str] = None,
+    reference: Optional[str] = None,
 ) -> None:
     assert vtype in VALID_TYPES, f"Tipo inválido: {vtype}. Use um de {sorted(VALID_TYPES)}"
-    session = build_session(timeout=timeout, retries=retries, backoff=backoff)
+    session = build_session(timeout=timeout, retries=retries, backoff=backoff, token=token)
 
-    brands = list_brands(session, vtype)
+    brands = list_brands(session, vtype, reference)
     if max_brands is not None:
         brands = brands[:max_brands]
 
@@ -128,43 +196,47 @@ def crawl_to_csv(
         writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
         writer.writeheader()
 
-        for bi, brand in enumerate(brands, start=1):
-            bcode = str(brand.get("codigo"))
-            bname = brand.get("nome")
-            print(f"[INFO] Marca {bi}/{len(brands)}: {bname} ({bcode})")
-            models = list_models(session, vtype, bcode)
-            if max_models is not None:
-                models = models[:max_models]
+        with futures.ThreadPoolExecutor(max_workers=max(1, int(workers))) as executor:
+            for bi, brand in enumerate(brands, start=1):
+                bcode = str(brand.get("code"))
+                bname = brand.get("name")
+                print(f"[INFO] Marca {bi}/{len(brands)}: {bname} ({bcode})")
+                models = list_models(session, vtype, bcode, reference)
+                if max_models is not None:
+                    models = models[:max_models]
 
-            for mi, model in enumerate(models, start=1):
-                mcode = str(model.get("codigo"))
-                mname = model.get("nome")
-                years = list_years(session, vtype, bcode, mcode)
-                for yi, year in enumerate(years, start=1):
-                    ycode = str(year.get("codigo"))
-                    price = get_price(session, vtype, bcode, mcode, ycode)
-                    if not price:
-                        continue
+                for mi, model in enumerate(models, start=1):
+                    mcode = str(model.get("code"))
+                    mname = model.get("name")
+                    years = list_years(session, vtype, bcode, mcode, reference)
 
-                    row = {
-                        "tipo": vtype,
-                        "codigo_marca": bcode,
-                        "marca": price.get("Marca") or bname,
-                        "codigo_modelo": mcode,
-                        "modelo": price.get("Modelo") or mname,
-                        "codigo_ano": ycode,
-                        "ano_modelo": price.get("AnoModelo"),
-                        "combustivel": price.get("Combustivel"),
-                        "sigla_combustivel": price.get("SiglaCombustivel"),
-                        "codigo_fipe": price.get("CodigoFipe"),
-                        "mes_referencia": price.get("MesReferencia"),
-                        "valor": (price.get("Valor") or "").replace("R$", "").strip(),
-                    }
-                    writer.writerow(row)
-                    total_rows += 1
+                    future_to_year = [
+                        executor.submit(
+                            _fetch_row,
+                            vtype,
+                            bcode,
+                            bname,
+                            mcode,
+                            mname,
+                            str(year.get("code")),
+                            timeout,
+                            retries,
+                            backoff,
+                            rate_delay,
+                            token,
+                            reference,
+                        )
+                        for year in years
+                    ]
 
-                    if rate_delay > 0:
-                        time.sleep(rate_delay)
+                    for fut in futures.as_completed(future_to_year):
+                        try:
+                            row = fut.result()
+                            if row:
+                                writer.writerow(row)
+                                total_rows += 1
+                        except Exception as e:
+                            print(f"[WARN] Falha ao processar ano: {e}", file=sys.stderr)
 
     print(f"[DONE] CSV gerado: {out_path} com {total_rows} linhas.")
 
@@ -193,11 +265,22 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     )
     p.add_argument("--max-brands", type=int, default=None, help="Limita quantidade de marcas (para testes)")
     p.add_argument("--max-models", type=int, default=None, help="Limita quantidade de modelos por marca (para testes)")
+    p.add_argument("--workers", type=int, default=1, help="Número de requisições concorrentes (padrão: 1)")
+    p.add_argument("--token", type=str, default=None, help="X-Subscription-Token para a API v2 (limite p/ dia)")
+    p.add_argument("--reference", type=str, default=None, help="Código de referência do mês (ex.: 308)")
     return p.parse_args(argv)
 
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
+    # Carrega .env (se existir) para permitir TOKEN e REFERENCE por ambiente
+    load_dotenv()
     args = parse_args(argv)
+    # Precedência: CLI --token > env TOKEN
+    if not args.token:
+        args.token = os.getenv("TOKEN")
+    if not args.reference:
+        # Permite definir por env também, opcional
+        args.reference = os.getenv("REFERENCE")
     try:
         crawl_to_csv(
             vtype=args.type,
@@ -208,6 +291,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             rate_delay=args.rate_delay,
             max_brands=args.max_brands,
             max_models=args.max_models,
+            workers=args.workers,
+            token=args.token,
+            reference=args.reference,
         )
         return 0
     except KeyboardInterrupt:
