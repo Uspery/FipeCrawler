@@ -26,9 +26,15 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import requests
 from requests.adapters import HTTPAdapter, Retry
 from dotenv import load_dotenv
+import json
+from datetime import datetime
+from pathlib import Path
 
 BASE_URL = "https://fipe.parallelum.com.br/api/v2"
 VALID_TYPES = {"carros", "motos", "caminhoes"}
+
+# Diretórios de estado/cache
+CACHE_DIR = Path(".state/cache")
 
 # Mapeia tipos em PT-BR para os paths da API v2
 TYPE_PATH = {
@@ -117,28 +123,87 @@ def list_references(session: requests.Session, limiter: Optional[RequestLimiter]
     return data or []
 
 
+def latest_reference_code(session: requests.Session) -> Optional[str]:
+    """Obtém o código da referência mais recente (maior código)."""
+    refs = list_references(session)
+    if not refs:
+        return None
+    try:
+        latest = max(refs, key=lambda r: int(str(r.get("code") or 0)))
+        return str(latest.get("code"))
+    except Exception:
+        # fallback: primeiro elemento
+        return str(refs[0].get("code")) if refs and refs[0].get("code") is not None else None
+
+
 def list_brands(session: requests.Session, vtype: str, reference: Optional[str], limiter: Optional[RequestLimiter] = None) -> List[Dict]:
+    # Cache somente quando há reference resolvida
+    if reference:
+        path = CACHE_DIR / str(reference) / TYPE_PATH[vtype] / "brands.json"
+        try:
+            if path.exists():
+                print(f"[CACHE] brands type={TYPE_PATH[vtype]} ref={reference}")
+                return json.loads(path.read_text(encoding="utf-8")) or []
+        except Exception:
+            pass
     url = f"{BASE_URL}/{TYPE_PATH[vtype]}/brands"
     if reference:
         url = f"{url}?reference={reference}"
-    data = get_json(session, url, limiter=limiter)
-    return data or []
+    data = get_json(session, url, limiter=limiter) or []
+    if reference:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            print(f"[HTTP] brands type={TYPE_PATH[vtype]} ref={reference} (cached)")
+        except Exception:
+            pass
+    return data
 
 
 def list_models(session: requests.Session, vtype: str, brand_code: str, reference: Optional[str], limiter: Optional[RequestLimiter] = None) -> List[Dict]:
+    if reference:
+        path = CACHE_DIR / str(reference) / TYPE_PATH[vtype] / f"models_{brand_code}.json"
+        try:
+            if path.exists():
+                print(f"[CACHE] models type={TYPE_PATH[vtype]} brand={brand_code} ref={reference}")
+                return json.loads(path.read_text(encoding="utf-8")) or []
+        except Exception:
+            pass
     url = f"{BASE_URL}/{TYPE_PATH[vtype]}/brands/{brand_code}/models"
     if reference:
         url = f"{url}?reference={reference}"
-    data = get_json(session, url, limiter=limiter)
-    return data or []
+    data = get_json(session, url, limiter=limiter) or []
+    if reference:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            print(f"[HTTP] models type={TYPE_PATH[vtype]} brand={brand_code} ref={reference} (cached)")
+        except Exception:
+            pass
+    return data
 
 
 def list_years(session: requests.Session, vtype: str, brand_code: str, model_code: str, reference: Optional[str], limiter: Optional[RequestLimiter] = None) -> List[Dict]:
+    if reference:
+        path = CACHE_DIR / str(reference) / TYPE_PATH[vtype] / f"years_{brand_code}_{model_code}.json"
+        try:
+            if path.exists():
+                print(f"[CACHE] years type={TYPE_PATH[vtype]} brand={brand_code} model={model_code} ref={reference}")
+                return json.loads(path.read_text(encoding="utf-8")) or []
+        except Exception:
+            pass
     url = f"{BASE_URL}/{TYPE_PATH[vtype]}/brands/{brand_code}/models/{model_code}/years"
     if reference:
         url = f"{url}?reference={reference}"
-    data = get_json(session, url, limiter=limiter)
-    return data or []
+    data = get_json(session, url, limiter=limiter) or []
+    if reference:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            print(f"[HTTP] years type={TYPE_PATH[vtype]} brand={brand_code} model={model_code} ref={reference} (cached)")
+        except Exception:
+            pass
+    return data
 
 
 def get_price(session: requests.Session, vtype: str, brand_code: str, model_code: str, year_code: str, reference: Optional[str], limiter: Optional[RequestLimiter] = None) -> Optional[Dict]:
@@ -216,10 +281,19 @@ def crawl_to_csv(
 ) -> None:
     assert vtype in VALID_TYPES, f"Tipo inválido: {vtype}. Use um de {sorted(VALID_TYPES)}"
     session = build_session(timeout=timeout, retries=retries, backoff=backoff, token=token)
+    # Se referência não vier definida, usar a mais recente
+    if not reference or (isinstance(reference, str) and reference.strip().lower() == "latest"):
+        reference = latest_reference_code(session)
+        print(f"[REF] using latest reference={reference}")
+
+    print(
+        f"[START] Export | time={datetime.now().isoformat(timespec='seconds')} | type={vtype} | out={out_path} | ref={reference} | workers={workers} | rate_delay={rate_delay}"
+    )
 
     brands = list_brands(session, vtype, reference)
     if max_brands is not None:
         brands = brands[:max_brands]
+    print(f"[STAGE] type={vtype} brands={len(brands)}")
 
     total_rows = 0
     with open(out_path, mode="w", newline="", encoding="utf-8") as f:
@@ -234,11 +308,13 @@ def crawl_to_csv(
                 models = list_models(session, vtype, bcode, reference)
                 if max_models is not None:
                     models = models[:max_models]
+                print(f"[STAGE] brand={bname}({bcode}) models={len(models)}")
 
                 for mi, model in enumerate(models, start=1):
                     mcode = str(model.get("code"))
                     mname = model.get("name")
                     years = list_years(session, vtype, bcode, mcode, reference)
+                    print(f"[STAGE] model={mname}({mcode}) years={len(years)}")
 
                     future_to_year = [
                         executor.submit(
@@ -343,6 +419,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     args.max_models = args.max_models if args.max_models is not None else _env_int("MAX_MODELS", None)
     args.workers = args.workers if args.workers is not None else _env_int("WORKERS", 1)
     try:
+        print(
+            f"[START] {('Full Scan' if args.full_scan else 'Export')} | time={datetime.now().isoformat(timespec='seconds')} | type={args.type or '-'} | out={args.out or '-'} | ref={args.reference or 'latest'}"
+        )
         # Modo de listagem de referências
         if args.list_references:
             sess = build_session(timeout=args.timeout, retries=args.retries, backoff=args.backoff, token=args.token)
@@ -357,13 +436,19 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             return 0
         # Modo full scan
         if args.full_scan:
+            # Referência: usar mais recente se não informada ou se 'latest'
+            ref = args.reference
+            if not ref or (isinstance(ref, str) and ref.strip().lower() == "latest"):
+                sess = build_session(timeout=args.timeout, retries=args.retries, backoff=args.backoff, token=args.token)
+                ref = latest_reference_code(sess)
+                print(f"[REF] using latest reference={ref}")
             return run_full_scan(
                 timeout=args.timeout,
                 retries=args.retries,
                 backoff=args.backoff,
                 rate_delay=args.rate_delay,
                 token=args.token,
-                reference=args.reference,
+                reference=ref,
             )
         # Validação para modo de exportação
         if not args.type or not args.out:
@@ -380,7 +465,13 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             max_models=args.max_models,
             workers=args.workers,
             token=args.token,
-            reference=args.reference,
+            reference=(
+                args.reference
+                if args.reference and str(args.reference).strip().lower() != "latest"
+                else (
+                    lambda _s: (print(f"[REF] using latest reference={latest_reference_code(_s)}") or latest_reference_code(_s))
+                )(build_session(timeout=args.timeout, retries=args.retries, backoff=args.backoff, token=args.token))
+            ),
         )
         return 0
     except KeyboardInterrupt:
@@ -391,15 +482,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         return 1
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
-
 
 # ---------------- Full Scan Implementation -----------------
-
-import json
-from datetime import datetime
-from pathlib import Path
 
 
 STATE_DIR = Path(".state")
@@ -454,6 +538,10 @@ def run_full_scan(
     full_dir = Path(os.getenv("FULL_SCAN_DIR", "full_scan"))
     limit = int(os.getenv("DAILY_LIMIT", "500"))
     margin = int(os.getenv("LIMIT_MARGIN", "10"))
+    # Evita pausa imediata por configuração incorreta
+    if margin >= limit:
+        print(f"[WARN] LIMIT_MARGIN (={margin}) >= DAILY_LIMIT (={limit}); ajustando margem para {max(0, limit-1)}")
+        margin = max(0, limit - 1)
 
     state = _load_state()
     today = _today_key()
@@ -469,23 +557,56 @@ def run_full_scan(
     model_idx = int(state.get("model_index", 0))
     year_idx = int(state.get("year_index", 0))
 
-    session = build_session(timeout=timeout, retries=retries, backoff=backoff, token=token)
+    # Índices correntes (para salvar exatamente onde parou, mesmo em exceção)
+    cur_ti, cur_bi, cur_mi, cur_yi = type_idx, brand_idx, model_idx, year_idx
 
+    session = build_session(timeout=timeout, retries=retries, backoff=backoff, token=token)
+    print(
+        f"[START] Full scan | time={datetime.now().isoformat(timespec='seconds')} | ref={reference or '-'} | full_dir={full_dir} | limit={limit} margin={margin} | date={today}"
+    )
+    print(
+        f"[STATE] checkpoint={STATE_FILE} | loaded: type={type_idx} brand={brand_idx} model={model_idx} year={year_idx} used={used}/{limit}"
+    )
+    
+    processed_rows = 0
     try:
+        # Log de retomada
+        print(
+            f"[RESUME] ref={reference or '-'} type_idx={type_idx} brand_idx={brand_idx} model_idx={model_idx} year_idx={year_idx} used={used}/{limit}"
+        )
         for ti in range(type_idx, len(types_order)):
+            cur_ti = ti
             vtype = types_order[ti]
             brands = list_brands(session, vtype, reference, limiter=limiter)
+            print(
+                f"[STAGE] type={vtype} brands={len(brands)} start_brand_index={(brand_idx if ti == type_idx else 0)}"
+            )
             for bi in range(brand_idx, len(brands)):
+                cur_bi = bi
                 b = brands[bi]
                 bcode, bname = str(b.get("code")), b.get("name")
+                if bi == brand_idx and model_idx > 0:
+                    print(f"[CONT] {vtype} brand={bname}({bcode}) model_idx={model_idx} year_idx={year_idx}")
+                else:
+                    print(f"[CONT] {vtype} brand={bname}({bcode}) model_idx=0 year_idx=0")
                 models = list_models(session, vtype, bcode, reference, limiter=limiter)
+                print(
+                    f"[STAGE] brand={bname}({bcode}) models={len(models)} start_model_index={(model_idx if (ti == type_idx and bi == brand_idx) else 0)}"
+                )
                 for mi in range(model_idx, len(models)):
+                    cur_mi = mi
                     m = models[mi]
                     mcode, mname = str(m.get("code")), m.get("name")
                     years = list_years(session, vtype, bcode, mcode, reference, limiter=limiter)
+                    print(
+                        f"[STAGE] model={mname}({mcode}) years={len(years)} start_year_index={(year_idx if (ti == type_idx and bi == brand_idx and mi == model_idx) else 0)}"
+                    )
                     for yi in range(year_idx, len(years)):
+                        cur_yi = yi
                         y = years[yi]
                         ycode = str(y.get("code"))
+                        if yi == year_idx:
+                            print(f"[NEXT] model={mname}({mcode}) start_year_pos={year_idx}/{len(years)}")
                         if rate_delay > 0:
                             time.sleep(rate_delay)
                         price = get_price(session, vtype, bcode, mcode, ycode, reference, limiter=limiter)
@@ -507,6 +628,7 @@ def run_full_scan(
                         }
                         out_csv = full_dir / f"{TYPE_PATH[vtype]}.csv"
                         _append_csv_row(out_csv, row)
+                        processed_rows += 1
 
                         # Atualiza índices após cada ano
                         state.update(
@@ -539,10 +661,28 @@ def run_full_scan(
         # Finalizado tudo: limpar estado
         _clear_state()
         print(f"[DONE] Full scan concluído. Arquivos em: {full_dir}")
+        print(f"[STATS] processed_rows={processed_rows} used_today={limiter.used}/{limiter.limit}")
         return 0
     except RuntimeError as e:
         # Provavelmente atingiu a margem do limite
-        state.update({"date": today, "used": limiter.used})
+        state.update(
+            {
+                "date": today,
+                "used": limiter.used,
+                "type_index": cur_ti,
+                "brand_index": cur_bi,
+                "model_index": cur_mi,
+                # Retomar exatamente neste ano (não incrementa, pois não processou)
+                "year_index": cur_yi,
+                "reference": reference,
+                "out_dir": str(full_dir),
+            }
+        )
         _save_state(state)
         print(f"[PAUSED] {e} | Usadas: {limiter.used}/{limiter.limit}. Retome amanhã.")
+        print(f"[STATS] processed_rows={processed_rows} used_today={limiter.used}/{limiter.limit}")
         return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
